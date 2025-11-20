@@ -25,3 +25,5 @@ migrations/
 
 # Logs
 *.log
+
+ gen_jwt.py
