@@ -3,7 +3,9 @@ from sqlalchemy.orm import Session
 from db.database import get_db
 from models.task import Task
 from schemas.task import TaskCreate, TaskUpdate
+from schemas.plant import PlantUpdateResult
 from auth.deps import get_current_user
+from services.plant_service import update_plant_level
 from datetime import datetime
 
 router = APIRouter(prefix="/tasks", tags=["Tasks"])
@@ -76,7 +78,15 @@ def update_task(task_id: str, task_update: TaskUpdate, db: Session = Depends(get
 
     db.commit()
     db.refresh(task)
-    return task
+    
+    # 植物レベルを更新
+    plant_update = update_plant_level(user.user_id, db)
+    
+    # タスク情報と植物更新情報を返す
+    return {
+        "task": task,
+        "plant_update": plant_update
+    }
 
 # タスク削除
 @router.delete("/{task_id}")
