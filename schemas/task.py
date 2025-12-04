@@ -1,3 +1,4 @@
+# schemas/task.py
 from pydantic import BaseModel
 from datetime import datetime
 from typing import Optional
@@ -31,4 +32,4 @@ class TaskResponse(TaskBase):
     completed_at: Optional[datetime]
 
     class Config:
-        orm_mode = True
+        from_attributes = True  # pydantic v2
