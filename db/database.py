@@ -1,28 +1,22 @@
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, declarative_base
-from dotenv import load_dotenv
-import os
+from fastapi import FastAPI
+from db.database import engine, Base
 
-load_dotenv()
+from models.user import User
+from models.task import Task
+from routers import auth
+from routers import tasks
+from routers import event_logs
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+app = FastAPI()
 
-# SQLAlchemy engine
-engine = create_engine(
-    DATABASE_URL,
-    echo=True,  # 開発中は SQL ログが見れる
-)
+# モデルを読み込んだあとにテーブル作成
+Base.metadata.create_all(bind=engine)
 
-# DB セッション生成
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# auth ルーター（prefix=/auth）
+app.include_router(auth.router)
 
-# Base（すべてのモデルが継承）
-Base = declarative_base()
+# tasks ルーター（prefix=/tasks）
+app.include_router(tasks.router)
 
-# 🔥 get_db 関数（FastAPI で絶対必要）
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+# event_logs ルーター（prefix=/event_logs）
+app.include_router(event_logs.router)
