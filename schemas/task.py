@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from datetime import datetime
 from typing import Optional
 from uuid import UUID
+from schemas.plant import PlantUpdateResult
 
 class TaskBase(BaseModel):
     title: str
@@ -33,3 +34,8 @@ class TaskResponse(TaskBase):
 
     class Config:
         from_attributes = True  # pydantic v2
+
+
+class TaskWithPlantResponse(BaseModel):
+    task: TaskResponse
+    plant_update: PlantUpdateResult

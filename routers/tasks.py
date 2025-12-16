@@ -3,8 +3,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from db.database import get_db
 from models.task import Task
-from schemas.task import TaskCreate, TaskUpdate, TaskResponse
+from schemas.task import TaskCreate, TaskUpdate, TaskResponse, TaskWithPlantResponse
 from auth.deps import get_current_user
+from services.plant_service import update_plant_level
 from datetime import datetime
 from uuid import UUID
 from typing import List
@@ -41,7 +42,7 @@ def get_task(task_id: UUID, db: Session = Depends(get_db), user=Depends(get_curr
         raise HTTPException(status_code=404, detail="Task not found")
     return task
 
-@router.put("/{task_id}", response_model=TaskResponse)
+@router.put("/{task_id}", response_model=TaskWithPlantResponse)
 def update_task(task_id: UUID, task_update: TaskUpdate, db: Session = Depends(get_db), user=Depends(get_current_user)):
     task = db.query(Task).filter(Task.user_id == user.user_id, Task.task_id == task_id).first()
     if not task:
@@ -69,7 +70,15 @@ def update_task(task_id: UUID, task_update: TaskUpdate, db: Session = Depends(ge
 
     db.commit()
     db.refresh(task)
-    return task
+    
+    # 植物レベルを更新
+    plant_update = update_plant_level(user.user_id, db)
+    
+    # タスク情報と植物更新情報を返す
+    return {
+        "task": task,
+        "plant_update": plant_update
+    }
 
 @router.delete("/{task_id}")
 def delete_task(task_id: UUID, db: Session = Depends(get_db), user=Depends(get_current_user)):
