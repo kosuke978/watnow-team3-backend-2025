@@ -1,21 +1,21 @@
 # schemas/event_log.py
-
 from pydantic import BaseModel
 from typing import Optional, Dict
 from datetime import datetime
+from uuid import UUID
 
 class EventLogCreate(BaseModel):
-    task_id: Optional[str] = None
+    task_id: Optional[UUID] = None
     event_type: str
-    data: Optional[Dict] = None        # ← metadata → data
+    data: Optional[Dict] = None
     device: Optional[str] = None
 
 class EventLogResponse(BaseModel):
-    log_id: str
-    user_id: str
-    task_id: Optional[str]
+    log_id: UUID
+    user_id: UUID
+    task_id: Optional[UUID]
     event_type: str
-    data: Optional[Dict]               # ← metadata → data
+    data: Optional[Dict]
     device: Optional[str]
     timestamp: datetime
 

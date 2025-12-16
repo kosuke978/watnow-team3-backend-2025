@@ -1,11 +1,11 @@
 # routers/event_logs.py
-
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from db.database import get_db
 from auth.deps import get_current_user
 from schemas.event_log import EventLogCreate, EventLogResponse
 from models.event_log import EventLog
+from typing import List
 
 router = APIRouter(
     prefix="/event_logs",
@@ -22,7 +22,7 @@ def create_event_log(
         user_id=user.user_id,
         task_id=data.task_id,
         event_type=data.event_type,
-        data=data.data,         # ← 修正ポイント
+        data=data.data,
         device=data.device
     )
 
@@ -31,8 +31,7 @@ def create_event_log(
     db.refresh(log)
     return log
 
-
-@router.get("/", response_model=list[EventLogResponse])
+@router.get("/", response_model=List[EventLogResponse])
 def get_event_logs(
     db: Session = Depends(get_db),
     user = Depends(get_current_user)
