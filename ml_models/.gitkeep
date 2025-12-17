@@ -1,0 +1,2 @@
+# This file ensures the ml_models directory is tracked by git
+# Trained ML models will be saved here
