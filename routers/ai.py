@@ -4,6 +4,7 @@ from db.database import get_db
 
 from models.task import Task
 from models.event_log import EventLog
+from schemas.event_log import EventType
 from auth.deps import get_current_user
 
 from services.ai_service import calculate_scores, generate_feedback
@@ -85,19 +86,14 @@ def ai_feedback(
     # wake_time
     # -------------------------
     wake_time = "00:00"
-    wake_log = next(
-        (l for l in logs if l.event_type == "wake_time_logged" and isinstance(l.data, dict)),
-        None,
-    )
-    if wake_log and wake_log.data.get("time"):
+    wake_log = next((l for l in logs if l.event_type == EventType.WAKE_TIME_LOGGED.value and l.data), None)
+    if wake_log and isinstance(wake_log.data, dict) and wake_log.data.get("time"):
         dt = _parse_iso(wake_log.data["time"])
         if dt:
             wake_time = _fmt_hhmm(dt)
 
-    # -------------------------
-    # daily_check_in
-    # -------------------------
-    daily_check_in = any(l.event_type == "daily_check_in" for l in logs)
+    # daily_check_in の有無
+    daily_check_in = any(l.event_type == EventType.DAILY_CHECK_IN.value for l in logs)
 
     # -------------------------
     # streak_days
@@ -122,7 +118,7 @@ def ai_feedback(
     # task_creation_hour
     create_hour_counts: dict[int, int] = {}
     for l in logs:
-        if l.event_type == "task_created":
+        if l.event_type == EventType.TASK_CREATED.value:
             h = l.timestamp.hour
             create_hour_counts[h] = create_hour_counts.get(h, 0) + 1
     task_creation_hour = max(create_hour_counts, key=create_hour_counts.get) if create_hour_counts else 0

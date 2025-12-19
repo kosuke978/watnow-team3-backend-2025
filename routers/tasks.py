@@ -6,6 +6,7 @@ from db.database import get_db
 from models.task import Task
 from models.event_log import EventLog
 from schemas.task import TaskCreate, TaskUpdate, TaskResponse, TaskWithPlantResponse
+from schemas.event_log import EventType
 from auth.deps import get_current_user
 from services.plant_service import update_plant_level
 
@@ -122,7 +123,7 @@ def update_task(
         log = EventLog(
             user_id=user.user_id,
             task_id=task.task_id,
-            event_type="task_completed",
+            event_type=EventType.TASK_COMPLETED.value,
             device="backend",
             data={
                 "completion_time": comp.isoformat() if comp else None,

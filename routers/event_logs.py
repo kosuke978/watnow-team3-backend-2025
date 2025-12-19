@@ -21,7 +21,7 @@ def create_event_log(
     log = EventLog(
         user_id=user.user_id,
         task_id=data.task_id,
-        event_type=data.event_type,
+        event_type=data.event_type.value,
         data=data.data,
         device=data.device
     )
