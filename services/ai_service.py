@@ -197,27 +197,36 @@ def calculate_scores(logs: List[EventLog], tasks: List[Task], user: User):
 
 
 # -------------------------
-# feedback generation (must include total feeling)
+# feedback generation (range対応版)
 # -------------------------
-def generate_feedback(input_data: dict):
-    try:
-        total = int(input_data.get("scores", {}).get("total", 0))
-    except Exception:
-        total = 0
-
-    _, band_text = _score_band(total)
+def generate_feedback(
+    chronotype: str,
+    total_score: int,
+    summary: dict,
+    range_type: str = "week"
+):
+    period_text = "この1週間" if range_type == "week" else "全期間"
+    _, band_text = _score_band(total_score)
 
     prompt = f"""
 あなたはユーザーの行動分析コーチです。
-与えられた JSON の行動データとスコアを用いて、ユーザーに1日のフィードバックを返してください。
+与えられた行動データとスコアを用いて、ユーザーにフィードバックを返してください。
 
-【今回の重要情報（必ず反映）】
-- 今日の総合スコア（total）: {total}
+【今回の重要情報(必ず反映)】
+- 対象期間: {period_text}
+- 総合スコア: {total_score}
 - スコアの言い換え: 「{band_text}」
-→ message には必ずこの言い換え（または同等表現）を入れてください。
-→ 数値 {total} は「出しても出さなくてもOK」。ただし“雰囲気だけ”は禁止。
+→ message には必ずこの言い換え(または同等表現)を入れてください。
 
-【出力形式】（JSON以外は禁止）
+【集計データ】
+- 完了タスク: {summary.get('completed', 0)}
+- 未完了タスク: {summary.get('pending', 0)}
+- 期限切れ: {summary.get('missed', 0)}
+- 完了率: {summary.get('completion_rate', 0):.1%}
+- よく完了する曜日: {summary.get('most_common_weekday', 'N/A')}
+- よく活動する時間帯: {summary.get('most_active_time_bucket', 'N/A')}
+
+【出力形式】(JSON以外は禁止)
 {{
   "message": "...",
   "advice": "...",
@@ -226,16 +235,14 @@ def generate_feedback(input_data: dict):
 
 【厳守ルール】
 - 否定しない
-- データに基づく根拠を書く（例：完了数、初動、アクティブ時間など）
-- chronotype に合わせた文章にする
-- 改善は1つだけ（adviceに1つ）
-- 150〜220文字程度（3項目合計）
+- データに基づく根拠を書く
+- chronotype({chronotype})に合わせた文章にする
+- 改善は1つだけ(adviceに1つ)
+- 150〜220文字程度(3項目合計)
 - 優しい語尾
 - 精神論禁止
 - 命令口調禁止
-
-以下の JSON を解析してフィードバックを生成してください：
-{json.dumps(input_data, ensure_ascii=False)}
+- 期間({period_text})を意識した表現にする
 """
 
     try:
@@ -262,7 +269,7 @@ def generate_feedback(input_data: dict):
         return json.loads(text)
     except Exception:
         return {
-            "message": text,
-            "advice": "",
-            "encourage": "今日もお疲れさま。よう頑張ったで。",
+            "message": f"{period_text}、よく頑張りました。",
+            "advice": "このペースを保ちましょう。",
+            "encourage": "今後も期待しています！",
         }

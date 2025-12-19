@@ -1,5 +1,6 @@
 # schemas/ai.py
 from pydantic import BaseModel
+from typing import Optional, Dict, Any
 
 class AIScore(BaseModel):
     focus: int
@@ -30,3 +31,25 @@ class AIInput(BaseModel):
     scores: AIScore
     summary: AISummary
     patterns: AIPatterns
+
+# Range対応の新しいスキーマ
+class AIFeedbackSummary(BaseModel):
+    completed: int
+    pending: int
+    missed: int
+    completion_rate: float
+    snooze_rate: float
+    most_common_weekday: str
+    most_active_time_bucket: str
+
+class AIFeedbackDebug(BaseModel):
+    rule_total: int
+    ml_total: Optional[int]
+    ml_features: Optional[Dict[str, Any]]
+    ml_used: bool
+
+class AIFeedbackResponse(BaseModel):
+    message: str
+    advice: str
+    encourage: str
+    summary: AIFeedbackSummary

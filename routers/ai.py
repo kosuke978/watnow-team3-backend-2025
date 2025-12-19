@@ -87,99 +87,95 @@ def _event_value(ev) -> str:
 
 
 # -------------------------
-# endpoint: feedback（既存）
+# endpoint: feedback（range対応版）
 # -------------------------
 @router.post("/feedback")
 def ai_feedback(
+    range: str = Query("week", pattern="^(week|all)$"),
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
+    from schemas.ai import AIFeedbackResponse, AIFeedbackSummary
+    
+    now = datetime.datetime.now()
     today = datetime.date.today()
-    start = datetime.datetime.combine(today, datetime.time.min)
-    end = datetime.datetime.combine(today, datetime.time.max)
+    
+    # range に応じた期間設定
+    if range == "week":
+        start_dt = now - timedelta(days=7)
+    else:
+        start_dt = datetime.datetime.min
+    
+    end_dt = now
 
-    # 今日のログ
+    # 期間内のログを取得
     logs: list[EventLog] = (
         db.query(EventLog)
         .filter(
             EventLog.user_id == user.user_id,
-            EventLog.timestamp >= start,
-            EventLog.timestamp <= end,
+            EventLog.timestamp >= start_dt,
+            EventLog.timestamp <= end_dt,
         )
         .order_by(EventLog.timestamp.asc())
         .all()
     )
 
-    # タスクは過去分も含めて取得（streak用）
+    # 期間内のタスクを取得
     tasks: list[Task] = (
         db.query(Task)
-        .filter(Task.user_id == user.user_id)
+        .filter(
+            Task.user_id == user.user_id,
+            Task.created_at >= start_dt,
+            Task.created_at <= end_dt,
+        )
         .all()
     )
-
+    
     # -------------------------
-    # wake_time
+    # 集計処理（/ai/insightsと同等）
     # -------------------------
-    wake_time = "00:00"
-    wake_log = next((l for l in logs if l.event_type == EventType.WAKE_TIME_LOGGED.value and l.data), None)
-    if wake_log and isinstance(wake_log.data, dict) and wake_log.data.get("time"):
-        dt = _parse_iso(wake_log.data["time"])
-        if dt:
-            wake_time = _fmt_hhmm(dt)
-
-    # daily_check_in の有無
-    daily_check_in = any(l.event_type == EventType.DAILY_CHECK_IN.value for l in logs)
-
-    # -------------------------
-    # streak_days
-    # -------------------------
-    streak_days = _calc_streak_days(tasks, today)
-
-    # -------------------------
-    # first_action_time
-    # -------------------------
-    first_action_time = _fmt_hhmm(logs[0].timestamp) if logs else "00:00"
-
-    # -------------------------
-    # patterns
-    # -------------------------
-    # most_active_hour
-    hour_counts: dict[int, int] = {}
-    for l in logs:
-        h = l.timestamp.hour
-        hour_counts[h] = hour_counts.get(h, 0) + 1
-    most_active_hour = max(hour_counts, key=hour_counts.get) if hour_counts else 0
-
-    # task_creation_hour
-    create_hour_counts: dict[int, int] = {}
-    for l in logs:
-        if l.event_type == EventType.TASK_CREATED.value:
-            h = l.timestamp.hour
-            create_hour_counts[h] = create_hour_counts.get(h, 0) + 1
-    task_creation_hour = max(create_hour_counts, key=create_hour_counts.get) if create_hour_counts else 0
-
-    # is_morning_person（暫定）
-    is_morning_person = False
-    if wake_log and wake_log.data.get("time"):
-        dt = _parse_iso(wake_log.data["time"])
-        if dt and 4 <= dt.hour <= 9:
-            is_morning_person = True
-
-    # -------------------------
-    # summary
-    # -------------------------
-    summary = AISummary(
-        completed_tasks=sum(1 for t in tasks if t.status == "completed"),
-        overdue_tasks=sum(1 for t in tasks if t.status == "missed"),
-        streak_days=streak_days,
-        first_action_time=first_action_time,
-        wake_time=wake_time,
-    )
-
-    patterns = AIPatterns(
-        most_active_hour=most_active_hour,
-        task_creation_hour=task_creation_hour,
-        is_morning_person=is_morning_person,
+    completed = sum(1 for t in tasks if t.status == "completed")
+    pending = sum(1 for t in tasks if t.status == "pending")
+    missed = sum(1 for t in tasks if t.status == "missed")
+    
+    completion_rate = 0.0
+    if (completed + missed) > 0:
+        completion_rate = completed / (completed + missed)
+    
+    # スヌーズ率（イベントタイプが存在しないため暫定で0）
+    snooze_rate = 0.0
+    
+    # 曜日別分布
+    weekday_counts = {day: 0 for day in WEEKDAY_KEYS}
+    for t in tasks:
+        if t.completed_at:
+            wd_idx = t.completed_at.weekday()
+            weekday_counts[WEEKDAY_KEYS[wd_idx]] += 1
+    most_common_weekday = max(weekday_counts, key=weekday_counts.get) if weekday_counts else "Mon"
+    
+    # 時間帯別分布
+    time_buckets = {"0-5": 0, "6-11": 0, "12-17": 0, "18-23": 0}
+    for t in tasks:
+        if t.completed_at:
+            h = t.completed_at.hour
+            if 0 <= h <= 5:
+                time_buckets["0-5"] += 1
+            elif 6 <= h <= 11:
+                time_buckets["6-11"] += 1
+            elif 12 <= h <= 17:
+                time_buckets["12-17"] += 1
+            else:
+                time_buckets["18-23"] += 1
+    most_active_time_bucket = max(time_buckets, key=time_buckets.get) if time_buckets else "0-5"
+    
+    summary_data = AIFeedbackSummary(
+        completed=completed,
+        pending=pending,
+        missed=missed,
+        completion_rate=completion_rate,
+        snooze_rate=snooze_rate,
+        most_common_weekday=most_common_weekday,
+        most_active_time_bucket=most_active_time_bucket,
     )
 
     # -------------------------
@@ -190,37 +186,27 @@ def ai_feedback(
 
     ml_total, ml_features = predict_total_score_debug(logs, tasks, user)
 
+    final_total = rule_total
     if ml_total is not None:
-        score_dict["total"] = int(round(ml_total))
-
-    scores = AIScore(**score_dict)
+        final_total = int(round(ml_total))
 
     # -------------------------
-    # AI input
+    # AI生成（新形式）
     # -------------------------
-    input_data = AIInput(
-        user_id=str(user.user_id),
-        user=AIUser(
-            name=user.name or "",
-            chronotype=user.chronotype or "neutral",
-            ai_status=user.ai_status or "default",
-        ),
-        scores=scores,
-        summary=summary,
-        patterns=patterns,
+    chronotype = user.chronotype or "neutral"
+    feedback_dict = generate_feedback(
+        chronotype=chronotype,
+        total_score=final_total,
+        summary=summary_data.model_dump(),
+        range_type=range
     )
-
-    result = generate_feedback(input_data.model_dump())
-
-    # ★開発用debug（後で消す）
-    result["debug"] = {
-        "rule_total": rule_total,
-        "ml_total": int(round(ml_total)) if ml_total is not None else None,
-        "ml_features": ml_features,
-        "ml_used": ml_total is not None,
-    }
-
-    return result
+    
+    return AIFeedbackResponse(
+        message=feedback_dict.get("message", ""),
+        advice=feedback_dict.get("advice", ""),
+        encourage=feedback_dict.get("encourage", ""),
+        summary=summary_data,
+    )
 
 
 # -------------------------
