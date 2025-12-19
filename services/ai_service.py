@@ -1,4 +1,3 @@
-# services/ai_service.py
 from openai import OpenAI
 import os
 from datetime import datetime
@@ -13,6 +12,10 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 IDLE_GAP_MINUTES = 15  # 無操作区間でセッションを分割
 
+
+# -------------------------
+# helpers
+# -------------------------
 def _parse_iso(dt_str: str) -> datetime | None:
     try:
         if dt_str.endswith("Z"):
@@ -21,8 +24,10 @@ def _parse_iso(dt_str: str) -> datetime | None:
     except Exception:
         return None
 
+
 def _extract_daily_check_in(logs: List[EventLog]) -> int:
     return 1 if any(l.event_type == EventType.DAILY_CHECK_IN.value for l in logs) else 0
+
 
 def _pair_task_sessions(logs: List[EventLog]) -> List[Tuple[datetime, datetime]]:
     """
@@ -47,6 +52,7 @@ def _pair_task_sessions(logs: List[EventLog]) -> List[Tuple[datetime, datetime]]
                     sessions.append((s, e))
 
     return sessions
+
 
 def _activity_sessions_from_timestamps(logs: List[EventLog]) -> List[Tuple[datetime, datetime]]:
     """
@@ -74,10 +80,11 @@ def _activity_sessions_from_timestamps(logs: List[EventLog]) -> List[Tuple[datet
     sessions.append((cur_start, cur_end))
     return sessions
 
+
 def _calc_session_metrics(logs: List[EventLog]) -> tuple[int, float]:
     """
     session_count, avg_session_minutes を返す
-    優先: task_started/completed のペア
+    優先: task_started/task_completed のペア
     補助: 活動セッション(無操作区間で分割)
     """
     paired = _pair_task_sessions(logs)
@@ -91,7 +98,6 @@ def _calc_session_metrics(logs: List[EventLog]) -> tuple[int, float]:
         act = _activity_sessions_from_timestamps(logs)
         for s, e in act:
             dur = (e - s).total_seconds() / 60
-            # 0分セッションを除外
             if dur >= 1:
                 durations.append(dur)
 
@@ -102,8 +108,24 @@ def _calc_session_metrics(logs: List[EventLog]) -> tuple[int, float]:
     avg_minutes = sum(durations) / len(durations)
     return session_count, avg_minutes
 
+
+def _score_band(total: int) -> tuple[str, str]:
+    """
+    total_score(0-100想定) を「言い方」に変換する
+    """
+    if total >= 80:
+        return ("great", "かなりええ流れの一日")
+    if total >= 60:
+        return ("good", "ええ感じに進んだ一日")
+    if total >= 40:
+        return ("ok", "まずまずの一日")
+    return ("low", "今日は控えめな一日")
+
+
+# -------------------------
+# scoring (rule-based)
+# -------------------------
 def calculate_scores(logs: List[EventLog], tasks: List[Task], user: User):
-    # ---- Consistency ----
     completed = sum(1 for t in tasks if t.status == "completed")
     overdue = sum(1 for t in tasks if t.status == "missed")
 
@@ -113,8 +135,7 @@ def calculate_scores(logs: List[EventLog], tasks: List[Task], user: User):
     if (completed + overdue) > 0:
         completion_rate = completed / (completed + overdue)
 
-    # streak は user カラム無いので 0 のままでもOK（routers側で summaryには入ってる）
-    streak = 0
+    streak = 0  # ここは今0のままでもOK（summary側はroutersで出してる）
 
     CONSISTENCY = (
         40 * min(completed / 3, 1)
@@ -123,7 +144,6 @@ def calculate_scores(logs: List[EventLog], tasks: List[Task], user: User):
         + 10 * completion_rate
     )
 
-    # ---- Focus ----
     session_count, avg_session_min = _calc_session_metrics(logs)
 
     # "画面移動/クリック多すぎ" ペナルティも入れたいならここで軽く
@@ -132,9 +152,7 @@ def calculate_scores(logs: List[EventLog], tasks: List[Task], user: User):
     noise = screen_moves + button_clicks
 
     base_focus = 60 * min(session_count / 3, 1) + 40 * min(avg_session_min / 30, 1)
-
-    # ざっくり：ノイズが多すぎたら最大15点だけ減点（やりすぎ防止）
-    penalty = min(noise / 50, 1) * 15  # 50操作以上で最大-15
+    penalty = min(noise / 50, 1) * 15
     FOCUS = max(base_focus - penalty, 0)
 
     # ---- Energy ----
@@ -168,53 +186,77 @@ def calculate_scores(logs: List[EventLog], tasks: List[Task], user: User):
 
     ENERGY = 60 * (wake_score / 100) + 40 * (action_score / 100)
 
-    # ---- TOTAL ----
     TOTAL = 0.4 * FOCUS + 0.4 * CONSISTENCY + 0.2 * ENERGY
 
     return {
         "focus": int(FOCUS),
         "consistency": int(CONSISTENCY),
         "energy": int(ENERGY),
-        "total": int(TOTAL)
+        "total": int(TOTAL),
     }
 
+
+# -------------------------
+# feedback generation (must include total feeling)
+# -------------------------
 def generate_feedback(input_data: dict):
+    try:
+        total = int(input_data.get("scores", {}).get("total", 0))
+    except Exception:
+        total = 0
+
+    _, band_text = _score_band(total)
+
     prompt = f"""
 あなたはユーザーの行動分析コーチです。
-与えられた JSON の行動データとスコアを用いて、
-ユーザーに1日のフィードバックを返してください。
+与えられた JSON の行動データとスコアを用いて、ユーザーに1日のフィードバックを返してください。
 
-【出力形式】
+【今回の重要情報（必ず反映）】
+- 今日の総合スコア（total）: {total}
+- スコアの言い換え: 「{band_text}」
+→ message には必ずこの言い換え（または同等表現）を入れてください。
+→ 数値 {total} は「出しても出さなくてもOK」。ただし“雰囲気だけ”は禁止。
+
+【出力形式】（JSON以外は禁止）
 {{
- "message": "...",
- "advice": "...",
- "encourage": "..."
+  "message": "...",
+  "advice": "...",
+  "encourage": "..."
 }}
 
 【厳守ルール】
 - 否定しない
-- データに基づく根拠を書く
+- データに基づく根拠を書く（例：完了数、初動、アクティブ時間など）
 - chronotype に合わせた文章にする
-- 改善は1つだけ
-- 150〜220文字程度
+- 改善は1つだけ（adviceに1つ）
+- 150〜220文字程度（3項目合計）
 - 優しい語尾
 - 精神論禁止
 - 命令口調禁止
 
 以下の JSON を解析してフィードバックを生成してください：
-
 {json.dumps(input_data, ensure_ascii=False)}
 """
 
-    resp = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "You are a helpful AI coach."},
-            {"role": "user", "content": prompt},
-        ],
-    )
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": "You are a helpful AI coach. Output MUST be a JSON object."},
+                {"role": "user", "content": prompt},
+            ],
+        )
+    except TypeError:
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a helpful AI coach. Output MUST be a JSON object."},
+                {"role": "user", "content": prompt},
+            ],
+        )
 
-    text = resp.choices[0].message.content
+    text = resp.choices[0].message.content or ""
 
     try:
         return json.loads(text)
@@ -222,5 +264,5 @@ def generate_feedback(input_data: dict):
         return {
             "message": text,
             "advice": "",
-            "encourage": "今日もお疲れさま。よう頑張ったで。"
+            "encourage": "今日もお疲れさま。よう頑張ったで。",
         }
