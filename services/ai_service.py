@@ -6,6 +6,7 @@ from typing import List, Tuple
 from models.event_log import EventLog
 from models.task import Task
 from models.user import User
+from schemas.event_log import EventType
 import json
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -21,7 +22,7 @@ def _parse_iso(dt_str: str) -> datetime | None:
         return None
 
 def _extract_daily_check_in(logs: List[EventLog]) -> int:
-    return 1 if any(l.event_type == "daily_check_in" for l in logs) else 0
+    return 1 if any(l.event_type == EventType.DAILY_CHECK_IN.value for l in logs) else 0
 
 def _pair_task_sessions(logs: List[EventLog]) -> List[Tuple[datetime, datetime]]:
     """
@@ -35,10 +36,10 @@ def _pair_task_sessions(logs: List[EventLog]) -> List[Tuple[datetime, datetime]]
             continue
         tid = str(l.task_id)
 
-        if l.event_type == "task_started":
+        if l.event_type == EventType.TASK_STARTED.value:
             started[tid] = l.timestamp
 
-        if l.event_type == "task_completed":
+        if l.event_type == EventType.TASK_COMPLETED.value:
             if tid in started:
                 s = started.pop(tid)
                 e = l.timestamp
@@ -125,9 +126,9 @@ def calculate_scores(logs: List[EventLog], tasks: List[Task], user: User):
     # ---- Focus ----
     session_count, avg_session_min = _calc_session_metrics(logs)
 
-    # “画面移動/クリック多すぎ” ペナルティも入れたいならここで軽く
-    screen_moves = sum(1 for l in logs if l.event_type == "screen_transition")
-    button_clicks = sum(1 for l in logs if l.event_type == "button_clicked")
+    # "画面移動/クリック多すぎ" ペナルティも入れたいならここで軽く
+    screen_moves = sum(1 for l in logs if l.event_type == EventType.SCREEN_TRANSITION.value)
+    button_clicks = sum(1 for l in logs if l.event_type == EventType.BUTTON_CLICKED.value)
     noise = screen_moves + button_clicks
 
     base_focus = 60 * min(session_count / 3, 1) + 40 * min(avg_session_min / 30, 1)
@@ -137,7 +138,7 @@ def calculate_scores(logs: List[EventLog], tasks: List[Task], user: User):
     FOCUS = max(base_focus - penalty, 0)
 
     # ---- Energy ----
-    wake_time_log = next((l for l in logs if l.event_type == "wake_time_logged" and l.data), None)
+    wake_time_log = next((l for l in logs if l.event_type == EventType.WAKE_TIME_LOGGED.value and l.data), None)
     first_action = logs[0].timestamp if logs else None
 
     wake_score = 0
