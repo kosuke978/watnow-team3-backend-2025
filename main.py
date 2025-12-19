@@ -1,16 +1,22 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware  # ★追加
 from db.database import engine, Base
 
-from models.user import User
-from models.task import Task
-from models.event_log import EventLog
-from models.plant import Plant
-
+# ... (既存のインポート) ...
 from routers import auth, tasks, event_logs, ai, plants
-
-from services.ml_score_service import load_model  # ★追加
+from services.ml_score_service import load_model
 
 app = FastAPI()
+
+# --- CORS設定 ここから ★追加 ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],    # すべてのオリジンからのアクセスを許可（開発用）
+    allow_credentials=True,
+    allow_methods=["*"],    # 全てのHTTPメソッド（GET, POST, etc.）を許可
+    allow_headers=["*"],    # 全てのヘッダー（Authorization, Content-Type, etc.）を許可
+)
+# --- CORS設定 ここまで ---
 
 # モデルを読み込んだあとにテーブル作成
 Base.metadata.create_all(bind=engine)
@@ -25,4 +31,5 @@ app.include_router(ai.router)
 @app.on_event("startup")
 def _startup():
     load_model()
+
 app.include_router(plants.router)
