@@ -27,3 +27,7 @@ migrations/
 *.log
 
  gen_jwt.py
+
+ # Database files
+*.db
+test.db

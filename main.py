@@ -6,7 +6,7 @@ from models.task import Task
 from models.event_log import EventLog
 from models.plant import Plant
 
-from routers import auth, tasks, event_logs, ai
+from routers import auth, tasks, event_logs, ai, plants
 
 from services.ml_score_service import load_model  # ★追加
 
@@ -25,3 +25,4 @@ app.include_router(ai.router)
 @app.on_event("startup")
 def _startup():
     load_model()
+app.include_router(plants.router)
