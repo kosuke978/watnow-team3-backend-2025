@@ -1,22 +1,28 @@
-from fastapi import FastAPI
-from db.database import engine, Base
+# db/database.py
+import os
+from dotenv import load_dotenv
 
-from models.user import User
-from models.task import Task
-from routers import auth
-from routers import tasks
-from routers import event_logs
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, declarative_base
 
-app = FastAPI()
+load_dotenv()
 
-# モデルを読み込んだあとにテーブル作成
-Base.metadata.create_all(bind=engine)
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL is not set in environment variables")
 
-# auth ルーター（prefix=/auth）
-app.include_router(auth.router)
+engine = create_engine(
+    DATABASE_URL,
+    echo=True,   # 開発中だけ。うるさければ False にしてOK
+)
 
-# tasks ルーター（prefix=/tasks）
-app.include_router(tasks.router)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# event_logs ルーター（prefix=/event_logs）
-app.include_router(event_logs.router)
+Base = declarative_base()
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()

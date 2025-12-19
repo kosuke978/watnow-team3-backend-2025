@@ -2,7 +2,7 @@
 from openai import OpenAI
 import os
 from datetime import datetime
-from typing import List
+from typing import List, Tuple
 from models.event_log import EventLog
 from models.task import Task
 from models.user import User
@@ -10,59 +10,164 @@ import json
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+IDLE_GAP_MINUTES = 15  # 無操作区間でセッションを分割
+
+def _parse_iso(dt_str: str) -> datetime | None:
+    try:
+        if dt_str.endswith("Z"):
+            dt_str = dt_str.replace("Z", "+00:00")
+        return datetime.fromisoformat(dt_str)
+    except Exception:
+        return None
+
+def _extract_daily_check_in(logs: List[EventLog]) -> int:
+    return 1 if any(l.event_type == "daily_check_in" for l in logs) else 0
+
+def _pair_task_sessions(logs: List[EventLog]) -> List[Tuple[datetime, datetime]]:
+    """
+    task_started -> task_completed を task_id でペアにしてセッションを作る
+    """
+    started: dict[str, datetime] = {}
+    sessions: List[Tuple[datetime, datetime]] = []
+
+    for l in logs:
+        if not l.task_id:
+            continue
+        tid = str(l.task_id)
+
+        if l.event_type == "task_started":
+            started[tid] = l.timestamp
+
+        if l.event_type == "task_completed":
+            if tid in started:
+                s = started.pop(tid)
+                e = l.timestamp
+                if e > s:
+                    sessions.append((s, e))
+
+    return sessions
+
+def _activity_sessions_from_timestamps(logs: List[EventLog]) -> List[Tuple[datetime, datetime]]:
+    """
+    logs の時系列から、無操作(IDLE_GAP_MINUTES以上)で区切ってセッションを作る（補助用）
+    """
+    if not logs:
+        return []
+
+    ts = [l.timestamp for l in logs]
+    ts.sort()
+
+    sessions: List[Tuple[datetime, datetime]] = []
+    cur_start = ts[0]
+    cur_end = ts[0]
+
+    for t in ts[1:]:
+        gap = (t - cur_end).total_seconds() / 60
+        if gap >= IDLE_GAP_MINUTES:
+            sessions.append((cur_start, cur_end))
+            cur_start = t
+            cur_end = t
+        else:
+            cur_end = t
+
+    sessions.append((cur_start, cur_end))
+    return sessions
+
+def _calc_session_metrics(logs: List[EventLog]) -> tuple[int, float]:
+    """
+    session_count, avg_session_minutes を返す
+    優先: task_started/completed のペア
+    補助: 活動セッション(無操作区間で分割)
+    """
+    paired = _pair_task_sessions(logs)
+
+    durations = []
+    for s, e in paired:
+        durations.append((e - s).total_seconds() / 60)
+
+    # ペアが少ない場合は、活動セッションでも補完
+    if len(durations) < 1:
+        act = _activity_sessions_from_timestamps(logs)
+        for s, e in act:
+            dur = (e - s).total_seconds() / 60
+            # 0分セッションを除外
+            if dur >= 1:
+                durations.append(dur)
+
+    if not durations:
+        return 0, 0.0
+
+    session_count = len(durations)
+    avg_minutes = sum(durations) / len(durations)
+    return session_count, avg_minutes
+
 def calculate_scores(logs: List[EventLog], tasks: List[Task], user: User):
     # ---- Consistency ----
     completed = sum(1 for t in tasks if t.status == "completed")
     overdue = sum(1 for t in tasks if t.status == "missed")
-    streak = 0  # 今はUserにカラム無いので0固定
 
-    if completed + overdue == 0:
-        completion_rate = 0
-    else:
+    daily_check_in = _extract_daily_check_in(logs)
+
+    completion_rate = 0.0
+    if (completed + overdue) > 0:
         completion_rate = completed / (completed + overdue)
+
+    # streak は user カラム無いので 0 のままでもOK（routers側で summaryには入ってる）
+    streak = 0
 
     CONSISTENCY = (
         40 * min(completed / 3, 1)
-        + 30 * 1  # とりあえず daily_check_in=1 とみなす
+        + 30 * daily_check_in
         + 20 * min(streak / 7, 1)
         + 10 * completion_rate
     )
 
-    # ---- Focus（今はダミー）----
-    session_count = 0
-    avg_session_min = 10
-    FOCUS = 60 * min(session_count / 3, 1) + 40 * min(avg_session_min / 30, 1)
+    # ---- Focus ----
+    session_count, avg_session_min = _calc_session_metrics(logs)
+
+    # “画面移動/クリック多すぎ” ペナルティも入れたいならここで軽く
+    screen_moves = sum(1 for l in logs if l.event_type == "screen_transition")
+    button_clicks = sum(1 for l in logs if l.event_type == "button_clicked")
+    noise = screen_moves + button_clicks
+
+    base_focus = 60 * min(session_count / 3, 1) + 40 * min(avg_session_min / 30, 1)
+
+    # ざっくり：ノイズが多すぎたら最大15点だけ減点（やりすぎ防止）
+    penalty = min(noise / 50, 1) * 15  # 50操作以上で最大-15
+    FOCUS = max(base_focus - penalty, 0)
 
     # ---- Energy ----
     wake_time_log = next((l for l in logs if l.event_type == "wake_time_logged" and l.data), None)
     first_action = logs[0].timestamp if logs else None
 
-    if wake_time_log and wake_time_log.data.get("time"):
-        t = datetime.fromisoformat(wake_time_log.data["time"])
-        hour = t.hour
+    wake_score = 0
+    action_score = 0
+
+    wake_dt = None
+    if wake_time_log and isinstance(wake_time_log.data, dict) and wake_time_log.data.get("time"):
+        wake_dt = _parse_iso(wake_time_log.data["time"])
+
+    if wake_dt:
+        hour = wake_dt.hour
         if 4 <= hour <= 9:
             wake_score = 100
         elif 9 < hour <= 12:
             wake_score = 50
         else:
             wake_score = 20
-    else:
-        wake_score = 0
 
-    if wake_time_log and first_action and wake_time_log.data.get("time"):
-        wake_dt = datetime.fromisoformat(wake_time_log.data["time"])
-        delta = (first_action - wake_dt).total_seconds() / 3600
-        if delta <= 1:
+    if wake_dt and first_action:
+        delta_h = (first_action - wake_dt).total_seconds() / 3600
+        if delta_h <= 1:
             action_score = 100
-        elif delta <= 3:
+        elif delta_h <= 3:
             action_score = 50
         else:
             action_score = 20
-    else:
-        action_score = 0
 
     ENERGY = 60 * (wake_score / 100) + 40 * (action_score / 100)
 
+    # ---- TOTAL ----
     TOTAL = 0.4 * FOCUS + 0.4 * CONSISTENCY + 0.2 * ENERGY
 
     return {
@@ -105,14 +210,13 @@ def generate_feedback(input_data: dict):
         messages=[
             {"role": "system", "content": "You are a helpful AI coach."},
             {"role": "user", "content": prompt},
-        ]
+        ],
     )
 
     text = resp.choices[0].message.content
 
     try:
-        data = json.loads(text)
-        return data
+        return json.loads(text)
     except Exception:
         return {
             "message": text,
